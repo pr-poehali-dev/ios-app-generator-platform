@@ -115,9 +115,9 @@ export default function Index() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button className="hidden sm:block text-sm text-muted-foreground hover:text-white transition-colors px-4 py-2">
-              Войти
-            </button>
+            <a href="/studio" className="hidden sm:block text-sm text-muted-foreground hover:text-white transition-colors px-4 py-2">
+              AI Web Studio
+            </a>
             <button className="btn-gradient text-white text-sm font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-violet-500/30">
               <span>Начать бесплатно</span>
             </button>
