@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { NewProjectDialog } from "@/components/studio/NewProjectDialog";
-import { fmtDate, ProjectRow, STATUS_META, studioApi } from "@/lib/studio-api";
+import { auth, fmtDate, ProjectRow, projectKind, STATUS_META, studioApi } from "@/lib/studio-api";
 
 const Card = ({ p }: { p: ProjectRow }) => (
   <Link
@@ -21,7 +21,7 @@ const Card = ({ p }: { p: ProjectRow }) => (
         </p>
       </div>
       <span className="shrink-0 rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground">
-        {p.source_type === "zip" ? "Импорт ZIP" : "Новый"}
+        {projectKind(p).label}
       </span>
     </div>
 
@@ -35,12 +35,12 @@ const Card = ({ p }: { p: ProjectRow }) => (
         ))}
       </div>
     ) : (
-      <p className="mb-3 text-xs text-muted-foreground">Аудит не проводился</p>
+      <p className="mb-3 text-xs text-muted-foreground">{projectKind(p).hint}</p>
     )}
 
     <div className="space-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
       <div className="flex items-center gap-1.5">
-        <Icon name="Play" size={12} /> Запуск: не подключён
+        <Icon name="Play" size={12} /> Сборка и запуск: не проверено
       </div>
       <div className="flex items-center gap-1.5">
         <Icon name="GitBranch" size={12} />
@@ -82,10 +82,19 @@ const Studio = () => {
           </div>
           <div className="flex gap-2">
             <Button variant="secondary" onClick={() => setDialog("create")}>
-              <Icon name="Plus" size={16} className="mr-1.5" /> Создать проект
+              <Icon name="Plus" size={16} className="mr-1.5" /> Черновик задания
             </Button>
             <Button onClick={() => setDialog("import")}>
               <Icon name="Upload" size={16} className="mr-1.5" /> Импортировать ZIP
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                auth.clear();
+                window.dispatchEvent(new Event("studio-logout"));
+              }}
+            >
+              <Icon name="LogOut" size={16} className="mr-1.5" /> Выйти
             </Button>
           </div>
         </header>
@@ -103,7 +112,7 @@ const Studio = () => {
             <Icon name="FolderOpen" size={32} className="text-muted-foreground" />
             <h3 className="font-heading text-lg font-bold">Проектов пока нет</h3>
             <p className="max-w-md text-sm text-muted-foreground">
-              Загрузите ZIP проекта, экспортированного из Poehali или другого источника, чтобы получить отчёт о переносимости.
+              Загрузите ZIP проекта, чтобы получить статический отчёт о переносимости. Рабочая копия при этом не создаётся.
             </p>
             <Button onClick={() => setDialog("import")}>Импортировать ZIP</Button>
           </div>

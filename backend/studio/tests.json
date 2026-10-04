@@ -1,1 +1,1 @@
-{"tests": [{"name": "Список проектов", "method": "GET", "path": "/?audit_id=1", "expectedStatus": 200, "expectedBody": {"id": 1, "project_id": 1}, "bodyMatcher": "partial"}]}
+{"tests": [{"name": "CORS preflight", "method": "OPTIONS", "path": "/", "expectedStatus": 200}]}

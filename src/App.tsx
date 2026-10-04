@@ -8,6 +8,7 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import Studio from "./pages/Studio";
 import ProjectPage from "./pages/ProjectPage";
+import { AuthGate } from "@/components/studio/AuthGate";
 
 const queryClient = new QueryClient();
 
@@ -19,8 +20,8 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
-          <Route path="/studio" element={<Studio />} />
-          <Route path="/projects/:id" element={<ProjectPage />} />
+          <Route path="/studio" element={<AuthGate><Studio /></AuthGate>} />
+          <Route path="/projects/:id" element={<AuthGate><ProjectPage /></AuthGate>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

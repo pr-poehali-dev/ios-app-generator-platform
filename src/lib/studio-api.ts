@@ -23,7 +23,6 @@ export type ProjectRow = {
   last_audit_id: number | null;
   last_audit_at: string | null;
   counts: Counts | null;
-  poehali_detected: boolean | null;
 };
 
 export type AuditSummary = {
@@ -34,7 +33,7 @@ export type AuditSummary = {
   counts: Counts;
 };
 
-export type ProjectFull = Omit<ProjectRow, "last_audit_id" | "last_audit_at" | "counts" | "poehali_detected"> & {
+export type ProjectFull = Omit<ProjectRow, "last_audit_id" | "last_audit_at" | "counts"> & {
   install_cmd: string;
   dev_cmd: string;
   build_cmd: string;
@@ -45,20 +44,35 @@ export type ProjectFull = Omit<ProjectRow, "last_audit_id" | "last_audit_at" | "
 
 export type AuditStatus = keyof Counts;
 
+export type Certainty = "fact" | "assumption" | "unknown";
+
+export type Basis = { file: string; line?: number; note?: string };
+
 export type AuditItem = {
   category: string;
   status: AuditStatus;
+  certainty: Certainty;
   title: string;
   detail: string;
-  evidence: string[];
+  basis: Basis[];
 };
 
-export type Detected = { value: string; source: string; confidence: "found" | "inferred" | "none"; script?: string };
+export type Detected = {
+  value: string;
+  source: string;
+  confidence: "found" | "inferred" | "none";
+  script?: string;
+  file?: string | null;
+  line?: number | null;
+};
 
 export type AuditReport = {
+  version?: number;
   notice: string;
+  certainty?: Record<Certainty, number>;
+  tables?: string[];
+  scan?: { files_scanned: number; files_text_total: number; truncated: boolean };
   archive: { filename: string; compressed: number; files: number; uncompressed: number; root_folder: string };
-  poehali_detected: boolean;
   stack: string[];
   package: {
     name: string;
@@ -81,18 +95,14 @@ export type AuditReport = {
     name: string;
     path: string;
     language: string;
-    has_handler: boolean;
+    handler_line: number | null;
     has_tests: boolean;
     requirements: string[];
-    uses_db: boolean;
-    uses_storage: boolean;
   }[];
-  func2url: string[];
   migrations: string[];
-  python: { files: Record<string, string[]>; root: string[] };
-  env_vars: { name: string; files: string[]; likely_platform: boolean; client_side: boolean }[];
-  env_files: string[];
-  poehali_refs: { host: string; count: number; files: string[] }[];
+  python: Record<string, string[]>;
+  env_vars: { name: string; files: Basis[]; client_side: boolean }[];
+  env_files: { file: string; keys: number; filled: number; is_example: boolean }[];
   extensions: [string, number][];
   skipped_dirs: Record<string, number>;
   warnings: string[];
@@ -110,9 +120,25 @@ export type AuditFull = {
   tree: [string, number][];
 };
 
-async function call<T>(init?: RequestInit, query = ""): Promise<T> {
-  const res = await fetch(URL_STUDIO + query, init);
+const TOKEN_KEY = "studio_token";
+
+export const auth = {
+  get: () => sessionStorage.getItem(TOKEN_KEY) || "",
+  set: (t: string) => sessionStorage.setItem(TOKEN_KEY, t),
+  clear: () => sessionStorage.removeItem(TOKEN_KEY),
+};
+
+export class AuthError extends Error {}
+
+async function call<T>(init: RequestInit = {}, query = ""): Promise<T> {
+  const headers = { ...(init.headers as Record<string, string>), "X-Auth-Token": auth.get() };
+  const res = await fetch(URL_STUDIO + query, { ...init, headers });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && auth.get()) {
+    auth.clear();
+    window.dispatchEvent(new Event("studio-logout"));
+  }
+  if (res.status === 401) throw new AuthError(data.error || "Требуется вход");
   if (!res.ok) throw new Error(data.error || "Ошибка сервера");
   return data as T;
 }
@@ -124,6 +150,8 @@ const post = (body: unknown, method = "POST"): RequestInit => ({
 });
 
 export const studioApi = {
+  login: (password: string) => call<{ token: string }>(post({ action: "login", password })),
+  check: () => call<{ ok: boolean }>(undefined, "?check=1"),
   list: (archived = false) =>
     call<{ projects: ProjectRow[] }>(undefined, archived ? "?archived=1" : "").then((r) => r.projects),
   get: (id: number) => call<ProjectFull>(undefined, `?id=${id}`),
@@ -148,6 +176,17 @@ export const fmtBytes = (n: number) =>
 
 export const fmtDate = (s: string) =>
   new Date(s).toLocaleString("ru-RU", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+export const CERTAINTY_META: Record<Certainty, { label: string; cls: string }> = {
+  fact: { label: "Факт", cls: "text-sky-300 bg-sky-500/10 border-sky-500/30" },
+  assumption: { label: "Предположение", cls: "text-violet-300 bg-violet-500/10 border-violet-500/30" },
+  unknown: { label: "Неизвестно", cls: "text-slate-300 bg-slate-500/10 border-slate-500/30" },
+};
+
+export const projectKind = (p: { source_type: string; template: string }) =>
+  p.source_type === "zip"
+    ? { label: "Аудит выполнен", hint: "Рабочая копия не подключена" }
+    : { label: "Черновик задания", hint: "Сайт не создаётся" };
 
 export const STATUS_META: Record<AuditStatus, { label: string; cls: string; icon: string }> = {
   portable: { label: "Переносимо", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30", icon: "CircleCheck" },

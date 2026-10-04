@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AuditReportView } from "@/components/studio/AuditReportView";
 import { NotConnected } from "@/components/studio/StatusBadge";
-import { fmtBytes, fmtDate, ProjectFull, studioApi, TEMPLATE_LABELS } from "@/lib/studio-api";
+import { fmtBytes, fmtDate, ProjectFull, projectKind, studioApi, TEMPLATE_LABELS } from "@/lib/studio-api";
 
 const FIELDS: [keyof ProjectFull, string, string][] = [
   ["repo_url", "Репозиторий", "https://github.com/..."],
@@ -61,7 +61,7 @@ const Settings = ({ project }: { project: ProjectFull }) => {
         </div>
       ))}
       <p className="text-xs text-muted-foreground">
-        Значения из аудита заполнены автоматически и их можно править. Они не запускались и не проверялись.
+        Команды заполнены автоматически по файлам архива и могут быть неточными. Они не запускались — статус: не проверено.
       </p>
       <Button onClick={() => save.mutate()} disabled={save.isPending}>Сохранить</Button>
     </div>
@@ -108,7 +108,8 @@ const ProjectPage = () => {
           <div>
             <h1 className="font-heading text-2xl font-black">{project.name}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              {project.source_type === "zip" ? "Импорт ZIP" : `Новый · ${TEMPLATE_LABELS[project.template] || project.template}`} · обновлён {fmtDate(project.updated_at)}
+              {projectKind(project).label} · {projectKind(project).hint}
+              {project.source_type === "new" ? ` · шаблон: ${TEMPLATE_LABELS[project.template] || project.template}` : ""} · обновлён {fmtDate(project.updated_at)}
             </p>
             {project.description && <p className="mt-2 max-w-2xl text-sm">{project.description}</p>}
           </div>
@@ -118,7 +119,7 @@ const ProjectPage = () => {
           </Button>
         </header>
 
-        <Tabs defaultValue={project.source_type === "zip" ? "audit" : "assistant"}>
+        <Tabs defaultValue={project.source_type === "zip" ? "audit" : "settings"}>
           <TabsList className="flex h-auto flex-wrap justify-start">
             <TabsTrigger value="audit">Аудит</TabsTrigger>
             <TabsTrigger value="assistant">AI-чат</TabsTrigger>
@@ -131,7 +132,7 @@ const ProjectPage = () => {
 
           <TabsContent value="audit" className="mt-5">
             {project.audits.length === 0 && (
-              <NotConnected icon="FileSearch" title="Аудит не проводился" text="Аудит доступен для проектов, импортированных из ZIP-архива." />
+              <NotConnected icon="FileSearch" title="Аудит не проводился" text="Это черновик задания. Аудит появляется только у проектов, импортированных из ZIP." />
             )}
             {project.audits.length > 0 && (
               <>
@@ -157,13 +158,13 @@ const ProjectPage = () => {
             <NotConnected icon="MessageSquare" title="AI-чат" text="AI-агент для правки кода не подключён. Для него нужен отдельный runner на вашем компьютере или сервере." />
           </TabsContent>
           <TabsContent value="files" className="mt-5">
-            <NotConnected icon="Files" title="Редактор файлов" text="Хранение и редактирование исходников не подключено. Сейчас сохраняется только список файлов из аудита (вкладка «Аудит → Файлы»)." />
+            <NotConnected icon="Files" title="Редактор файлов" text="Рабочая копия проекта не подключена, исходники не хранятся. Сейчас сохраняется только список файлов из аудита." />
           </TabsContent>
           <TabsContent value="changes" className="mt-5">
             <NotConnected icon="GitCompare" title="Изменения и diff" text="Появятся вместе с AI-агентом и Git. Сейчас никакие изменения не создаются." />
           </TabsContent>
           <TabsContent value="preview" className="mt-5">
-            <NotConnected icon="MonitorPlay" title="Предпросмотр" text="Запуск проекта не подключён: внутри Poehali нельзя исполнять чужой код. Нужен отдельный runner." />
+            <NotConnected icon="MonitorPlay" title="Предпросмотр" text="Сборка и запуск: не проверено. Исполнять чужой код внутри этой платформы нельзя — нужен отдельный runner." />
           </TabsContent>
           <TabsContent value="history" className="mt-5">
             <NotConnected icon="History" title="История версий" text="Git-коммитов нет. Здесь появятся версии после подключения репозитория и runner." />

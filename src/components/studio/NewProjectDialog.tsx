@@ -71,13 +71,13 @@ export const NewProjectDialog = ({ open, onOpenChange, initialTab = "import" }: 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle className="font-heading">Новый проект</DialogTitle>
-          <DialogDescription>Создайте запись или загрузите ZIP для аудита</DialogDescription>
+          <DialogTitle className="font-heading">Новая запись</DialogTitle>
+          <DialogDescription>Загрузите ZIP для аудита или сохраните черновик задания</DialogDescription>
         </DialogHeader>
         <Tabs defaultValue={initialTab}>
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="import">Импорт ZIP</TabsTrigger>
-            <TabsTrigger value="create">Создать</TabsTrigger>
+            <TabsTrigger value="create">Черновик задания</TabsTrigger>
           </TabsList>
 
           <TabsContent value="import" className="mt-4 space-y-4">
@@ -111,7 +111,7 @@ export const NewProjectDialog = ({ open, onOpenChange, initialTab = "import" }: 
               <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/..." />
             </div>
             <p className="text-xs text-muted-foreground">
-              Архив разбирается статически: код не запускается, зависимости не устанавливаются. Сам архив не сохраняется — только отчёт и список файлов.
+              Архив разбирается статически: код не запускается, зависимости не устанавливаются. Сам архив не сохраняется — только отчёт и список файлов. Значения секретов в отчёт не попадают.
             </p>
             <Button className="w-full" onClick={doImport} disabled={busy || !file}>
               {busy ? "Анализирую…" : "Загрузить и проанализировать"}
@@ -145,10 +145,10 @@ export const NewProjectDialog = ({ open, onOpenChange, initialTab = "import" }: 
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Генерация сайта не подключена: сохраняются только название, описание и выбранный шаблон.
+              Сайт не создаётся: сохраняется только задание — название, описание и выбранный шаблон.
             </p>
             <Button className="w-full" onClick={create} disabled={busy}>
-              {busy ? "Сохраняю…" : "Создать запись проекта"}
+              {busy ? "Сохраняю…" : "Сохранить черновик задания"}
             </Button>
           </TabsContent>
         </Tabs>

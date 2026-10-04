@@ -1,6 +1,9 @@
 import base64
+import hashlib
+import hmac
 import json
 import os
+import time
 
 import psycopg2
 import psycopg2.extras
@@ -8,6 +11,9 @@ import psycopg2.extras
 from auditor import audit_zip, AuditError
 
 MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
+TOKEN_TTL = 12 * 3600
+MAX_FAILS = 5
+FAIL_WINDOW_MIN = 15
 TEMPLATES = {'empty', 'vite', 'tailwind', 'components'}
 EDITABLE = ['name', 'description', 'repo_url', 'stack', 'install_cmd', 'dev_cmd',
             'build_cmd', 'output_dir', 'node_version', 'archived']
@@ -19,7 +25,7 @@ CORS = {
 }
 
 
-def resp(status: int, body: dict) -> dict:
+def resp(status, body):
     return {
         'statusCode': status,
         'headers': {**CORS, 'Content-Type': 'application/json'},
@@ -33,22 +39,74 @@ def connect():
     return conn
 
 
-def schema() -> str:
+def schema():
     return os.environ['MAIN_DB_SCHEMA']
+
+
+def _key():
+    pw = os.environ.get('STUDIO_ADMIN_PASSWORD', '')
+    return hashlib.sha256(('studio-token:' + pw).encode()).digest() if pw else b''
+
+
+def make_token():
+    exp = str(int(time.time()) + TOKEN_TTL)
+    sig = hmac.new(_key(), exp.encode(), hashlib.sha256).hexdigest()
+    return exp + '.' + sig
+
+
+def token_valid(token):
+    if not _key() or not token or '.' not in token:
+        return False
+    exp, sig = token.split('.', 1)
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    good = hmac.new(_key(), exp.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, good)
+
+
+def header(event, name):
+    for k, v in (event.get('headers') or {}).items():
+        if k.lower() == name.lower():
+            return v
+    return ''
+
+
+def client_ip(event):
+    return str(((event.get('requestContext') or {}).get('identity') or {}).get('sourceIp') or '')[:64]
+
+
+def login(cur, event, body):
+    if not os.environ.get('STUDIO_ADMIN_PASSWORD'):
+        return resp(503, {'error': 'Доступ не настроен: администратор не задал пароль кабинета'})
+    s = schema()
+    ip = client_ip(event)
+    cur.execute(
+        f"SELECT COUNT(*) AS n FROM {s}.studio_login_attempts WHERE ip = %s AND created_at > NOW() - INTERVAL '{FAIL_WINDOW_MIN} minutes'",
+        (ip,),
+    )
+    if cur.fetchone()['n'] >= MAX_FAILS:
+        return resp(429, {'error': 'Слишком много неудачных попыток. Подождите %d минут' % FAIL_WINDOW_MIN})
+    given = str(body.get('password') or '').encode()
+    real = os.environ['STUDIO_ADMIN_PASSWORD'].encode()
+    if not hmac.compare_digest(hashlib.sha256(given).digest(), hashlib.sha256(real).digest()):
+        cur.execute(f"INSERT INTO {s}.studio_login_attempts (ip) VALUES (%s)", (ip,))
+        cur.execute(f"DELETE FROM {s}.studio_login_attempts WHERE created_at < NOW() - INTERVAL '1 day'")
+        return resp(401, {'error': 'Неверный пароль'})
+    return resp(200, {'token': make_token(), 'expires_in': TOKEN_TTL})
 
 
 PROJECT_COLS = ('id, name, description, template, source_type, repo_url, stack, install_cmd, '
                 'dev_cmd, build_cmd, output_dir, node_version, archived, created_at, updated_at')
 
 
-def list_projects(cur, include_archived: bool):
+def list_projects(cur, include_archived):
     s = schema()
     where = '' if include_archived else 'WHERE p.archived = FALSE'
     cur.execute(
         f"""SELECT p.id, p.name, p.description, p.template, p.source_type, p.repo_url, p.stack,
                    p.archived, p.created_at, p.updated_at,
                    a.id AS last_audit_id, a.created_at AS last_audit_at,
-                   a.report->'counts' AS counts, a.report->'poehali_detected' AS poehali_detected
+                   a.report->'counts' AS counts
             FROM {s}.projects p
             LEFT JOIN LATERAL (
                 SELECT id, created_at, report FROM {s}.project_audits
@@ -60,7 +118,7 @@ def list_projects(cur, include_archived: bool):
     return cur.fetchall()
 
 
-def get_project(cur, pid: int):
+def get_project(cur, pid):
     s = schema()
     cur.execute(f"SELECT {PROJECT_COLS} FROM {s}.projects WHERE id = %s", (pid,))
     project = cur.fetchone()
@@ -75,7 +133,7 @@ def get_project(cur, pid: int):
     return project
 
 
-def get_audit(cur, aid: int):
+def get_audit(cur, aid):
     s = schema()
     cur.execute(
         f"""SELECT id, project_id, filename, archive_size, report, tree, created_at
@@ -85,22 +143,39 @@ def get_audit(cur, aid: int):
     return cur.fetchone()
 
 
-def clean_str(value, limit: int) -> str:
+def clean_str(value, limit):
     return str(value or '').strip()[:limit]
 
 
 def handler(event: dict, context) -> dict:
-    """Кабинет проектов AI Web Studio: список, создание, настройки и статический аудит ZIP-архива."""
+    """Кабинет AI Web Studio: вход по паролю, проекты, настройки и статический аудит ZIP. Все операции кроме входа требуют токен."""
     method = event.get('httpMethod', 'GET')
     if method == 'OPTIONS':
         return {'statusCode': 200, 'headers': {**CORS, 'Access-Control-Max-Age': '86400'}, 'body': ''}
 
     params = event.get('queryStringParameters') or {}
+    try:
+        body = json.loads(event.get('body') or '{}') if method in ('POST', 'PUT') else {}
+    except ValueError:
+        return resp(400, {'error': 'Некорректный запрос'})
+    if not isinstance(body, dict):
+        return resp(400, {'error': 'Некорректный запрос'})
+
     conn = connect()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     s = schema()
     try:
+        if method == 'POST' and body.get('action') == 'login':
+            return login(cur, event, body)
+
+        if not os.environ.get('STUDIO_ADMIN_PASSWORD'):
+            return resp(503, {'error': 'Доступ не настроен: администратор не задал пароль кабинета'})
+        if not token_valid(header(event, 'X-Auth-Token')):
+            return resp(401, {'error': 'Требуется вход'})
+
         if method == 'GET':
+            if params.get('check'):
+                return resp(200, {'ok': True})
             if params.get('audit_id'):
                 audit = get_audit(cur, int(params['audit_id']))
                 return resp(200, audit) if audit else resp(404, {'error': 'Аудит не найден'})
@@ -109,12 +184,10 @@ def handler(event: dict, context) -> dict:
                 return resp(200, project) if project else resp(404, {'error': 'Проект не найден'})
             return resp(200, {'projects': list_projects(cur, params.get('archived') == '1')})
 
-        body = json.loads(event.get('body') or '{}')
-
         if method == 'POST' and body.get('action') == 'create':
             name = clean_str(body.get('name'), 200)
             if not name:
-                return resp(400, {'error': 'Укажите название проекта'})
+                return resp(400, {'error': 'Укажите название черновика'})
             template = body.get('template') if body.get('template') in TEMPLATES else 'empty'
             cur.execute(
                 f"""INSERT INTO {s}.projects (name, description, template, source_type)
@@ -132,7 +205,7 @@ def handler(event: dict, context) -> dict:
             if len(raw_b64) > MAX_ARCHIVE_BYTES * 4 // 3 + 16:
                 return resp(413, {'error': 'Архив больше 8 МБ. Удалите node_modules и dist и попробуйте снова'})
             try:
-                data = base64.b64decode(raw_b64, validate=False)
+                data = base64.b64decode(raw_b64, validate=True)
             except ValueError:
                 return resp(400, {'error': 'Не удалось прочитать архив'})
             if len(data) > MAX_ARCHIVE_BYTES:
@@ -188,6 +261,8 @@ def handler(event: dict, context) -> dict:
             return resp(200, {'ok': True}) if cur.fetchone() else resp(404, {'error': 'Проект не найден'})
 
         return resp(400, {'error': 'Неизвестное действие'})
+    except ValueError:
+        return resp(400, {'error': 'Некорректные параметры'})
     finally:
         cur.close()
         conn.close()

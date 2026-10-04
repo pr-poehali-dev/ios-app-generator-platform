@@ -2,16 +2,40 @@ import { useMemo, useState } from "react";
 import Icon from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AuditFull, AuditStatus, Detected, fmtBytes, STATUS_META } from "@/lib/studio-api";
+import {
+  AuditFull, AuditStatus, Basis, CERTAINTY_META, Certainty, Detected, fmtBytes, STATUS_META,
+} from "@/lib/studio-api";
 import { StatusBadge } from "./StatusBadge";
 
 const ORDER: AuditStatus[] = ["needs_adaptation", "needs_setup", "unknown", "portable"];
 
 const CONF: Record<Detected["confidence"], string> = {
-  found: "найдено в файлах",
+  found: "найдено в файле",
   inferred: "предположение",
   none: "не определено",
 };
+
+const loc = (b: Basis) => `${b.file}${b.line ? `:${b.line}` : ""}`;
+
+const CertaintyTag = ({ c }: { c: Certainty }) => (
+  <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${CERTAINTY_META[c].cls}`}>
+    {CERTAINTY_META[c].label}
+  </span>
+);
+
+const BasisList = ({ basis }: { basis: Basis[] }) =>
+  basis.length === 0 ? (
+    <p className="mt-2 text-xs text-muted-foreground">Основание: файлов нет — вывод сделан по их отсутствию.</p>
+  ) : (
+    <ul className="mt-2 space-y-0.5 font-mono text-xs text-muted-foreground">
+      {basis.map((b, i) => (
+        <li key={i} className="truncate">
+          • {loc(b)}
+          {b.note ? <span className="text-slate-400"> — {b.note}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
 
 const CmdRow = ({ label, d }: { label: string; d: Detected }) => (
   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-2.5 last:border-0">
@@ -24,6 +48,7 @@ const CmdRow = ({ label, d }: { label: string; d: Detected }) => (
       )}
       <div className="mt-0.5 text-xs text-muted-foreground">
         {CONF[d.confidence]} · {d.source}
+        {d.file ? ` · ${d.file}${d.line ? `:${d.line}` : ""}` : ""}
       </div>
     </div>
   </div>
@@ -49,15 +74,27 @@ const TreeView = ({ tree }: { tree: [string, number][] }) => {
   );
 };
 
+const Unsupported = () => (
+  <div className="rounded-xl border border-border p-6 text-sm text-muted-foreground">
+    Этот отчёт создан старой версией аудитора и не содержит файлов-оснований. Загрузите архив заново, чтобы получить проверяемый отчёт.
+  </div>
+);
+
 export const AuditReportView = ({ audit }: { audit: AuditFull }) => {
   const r = audit.report;
+  if (r.version !== 2) return <Unsupported />;
   const grouped = ORDER.map((s) => ({ s, list: r.items.filter((i) => i.status === s) })).filter((g) => g.list.length);
+  const cert = r.certainty;
 
   return (
     <div className="space-y-5">
       <div className="flex items-start gap-3 rounded-xl border border-border bg-secondary/40 p-4 text-sm">
         <Icon name="ShieldCheck" size={18} className="mt-0.5 shrink-0 text-primary" />
-        <p className="text-muted-foreground">{r.notice} Работоспособность проекта этим отчётом не подтверждается.</p>
+        <div className="space-y-1 text-muted-foreground">
+          <p>{r.notice}</p>
+          <p>Установка, сборка и запуск: <b className="text-foreground">не проверено</b>. Проект не подключён к рабочей копии.</p>
+          {r.scan && <p>Просмотрено текстовых файлов: {r.scan.files_scanned} из {r.scan.files_text_total}.</p>}
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-4">
@@ -68,6 +105,14 @@ export const AuditReportView = ({ audit }: { audit: AuditFull }) => {
           </div>
         ))}
       </div>
+
+      {cert && (
+        <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+          {(Object.keys(CERTAINTY_META) as Certainty[]).map((c) => (
+            <span key={c} className="flex items-center gap-1.5"><CertaintyTag c={c} /> {cert[c]}</span>
+          ))}
+        </div>
+      )}
 
       {r.warnings.length > 0 && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
@@ -97,15 +142,12 @@ export const AuditReportView = ({ audit }: { audit: AuditFull }) => {
                 {list.map((it, i) => (
                   <div key={i} className="glass-card rounded-xl p-4">
                     <div className="flex flex-wrap items-center gap-2">
+                      <CertaintyTag c={it.certainty} />
                       <span className="rounded bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground">{it.category}</span>
                       <h4 className="text-sm font-semibold">{it.title}</h4>
                     </div>
                     {it.detail && <p className="mt-1.5 text-sm text-muted-foreground">{it.detail}</p>}
-                    {it.evidence.length > 0 && (
-                      <ul className="mt-2 space-y-0.5 font-mono text-xs text-muted-foreground">
-                        {it.evidence.map((e) => <li key={e} className="truncate">• {e}</li>)}
-                      </ul>
-                    )}
+                    <BasisList basis={it.basis} />
                   </div>
                 ))}
               </div>
@@ -116,14 +158,17 @@ export const AuditReportView = ({ audit }: { audit: AuditFull }) => {
 
         <TabsContent value="commands" className="mt-4">
           <div className="glass-card rounded-xl px-4">
-            <CmdRow label="Менеджер пакетов" d={{ value: r.commands.package_manager, source: r.lockfiles.join(", ") || "lock-файл не найден", confidence: r.commands.package_manager ? "found" : "none" }} />
+            <CmdRow
+              label="Менеджер пакетов"
+              d={{ value: r.commands.package_manager, source: r.lockfiles.join(", ") || "lock-файл не найден", confidence: r.commands.package_manager ? "inferred" : "none" }}
+            />
             <CmdRow label="Установка" d={r.commands.install} />
             <CmdRow label="Запуск разработки" d={r.commands.dev} />
             <CmdRow label="Сборка" d={r.commands.build} />
             <CmdRow label="Папка сборки" d={r.commands.output_dir} />
             <CmdRow label="Версия Node.js" d={r.commands.node_version} />
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">Команды выведены из файлов и не запускались.</p>
+          <p className="mt-3 text-xs text-muted-foreground">Команды выведены из файлов. Ни одна не запускалась — результат: не проверено.</p>
         </TabsContent>
 
         <TabsContent value="env" className="mt-4">
@@ -133,40 +178,54 @@ export const AuditReportView = ({ audit }: { audit: AuditFull }) => {
             <div className="glass-card divide-y divide-border rounded-xl">
               {r.env_vars.map((v) => (
                 <div key={v.name} className="flex flex-wrap items-center justify-between gap-2 p-3">
-                  <div>
+                  <div className="min-w-0">
                     <code className="text-sm">{v.name}</code>
-                    <div className="text-xs text-muted-foreground">{v.files.join(", ")}</div>
+                    <div className="truncate font-mono text-xs text-muted-foreground">{v.files.map(loc).join(", ")}</div>
                   </div>
-                  <div className="flex gap-1.5 text-[11px]">
-                    {v.likely_platform && <span className="rounded-full border border-orange-500/30 bg-orange-500/10 px-2 py-0.5 text-orange-300">задаёт платформа</span>}
-                    {v.client_side && <span className="rounded-full border border-border px-2 py-0.5 text-muted-foreground">виден в браузере</span>}
-                  </div>
+                  {v.client_side && (
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">виден в браузере</span>
+                  )}
                 </div>
               ))}
             </div>
           )}
-          <p className="mt-3 text-xs text-muted-foreground">Показаны только имена. Значения не читались и не сохранялись.</p>
+          {r.env_files.length > 0 && (
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+              {r.env_files.map((e) => (
+                <div key={e.file} className="font-mono">
+                  {e.file}: ключей {e.keys}, с заполненным значением {e.filled}{e.is_example ? " (шаблон)" : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="mt-3 text-xs text-muted-foreground">Показаны только имена. Значения не попадают в отчёт и не сохраняются.</p>
         </TabsContent>
 
         <TabsContent value="backend" className="mt-4 space-y-4">
-          {r.functions.length === 0 && r.migrations.length === 0 && <p className="text-sm text-muted-foreground">Backend-функций и SQL-миграций не найдено.</p>}
+          {r.functions.length === 0 && r.migrations.length === 0 && (
+            <p className="text-sm text-muted-foreground">Backend-функций и SQL-миграций по путям backend/ и db_migrations/ не найдено.</p>
+          )}
           {r.functions.map((f) => (
             <div key={f.path} className="glass-card rounded-xl p-4 text-sm">
               <div className="font-semibold">{f.name} <span className="font-normal text-muted-foreground">· {f.language}</span></div>
-              <div className="mt-1 font-mono text-xs text-muted-foreground">{f.path}</div>
+              <div className="mt-1 font-mono text-xs text-muted-foreground">
+                {f.path}{f.handler_line ? `:${f.handler_line}` : ""}
+              </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-                <span className="rounded bg-secondary px-2 py-0.5">handler: {f.has_handler ? "найден" : "не найден"}</span>
+                <span className="rounded bg-secondary px-2 py-0.5">handler: {f.handler_line ? "найден" : "не найден"}</span>
                 <span className="rounded bg-secondary px-2 py-0.5">tests.json: {f.has_tests ? "есть" : "нет"}</span>
-                {f.uses_db && <span className="rounded bg-secondary px-2 py-0.5">PostgreSQL</span>}
-                {f.uses_storage && <span className="rounded bg-secondary px-2 py-0.5">S3</span>}
+                <span className="rounded bg-secondary px-2 py-0.5">запуск: не проверено</span>
               </div>
               {f.requirements.length > 0 && <div className="mt-2 text-xs text-muted-foreground">Пакеты: {f.requirements.join(", ")}</div>}
             </div>
           ))}
           {r.migrations.length > 0 && (
             <div className="glass-card rounded-xl p-4 text-sm">
-              <div className="mb-1 font-semibold">SQL-миграции ({r.migrations.length})</div>
+              <div className="mb-1 font-semibold">SQL-миграции ({r.migrations.length}) · применение: не проверено</div>
               <ul className="font-mono text-xs text-muted-foreground">{r.migrations.map((m) => <li key={m}>• {m}</li>)}</ul>
+              {r.tables && r.tables.length > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">Таблицы в CREATE TABLE: {r.tables.join(", ")}</p>
+              )}
             </div>
           )}
         </TabsContent>
