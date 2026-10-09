@@ -89,6 +89,13 @@ class RunnerError(Exception):
     pass
 
 
+class KeyRevoked(RunnerError):
+    pass
+
+
+STOP = {'v': False}
+
+
 class Cancelled(Exception):
     pass
 
@@ -112,6 +119,9 @@ def load_config(path):
             cfg[key] = os.environ[env]
     register_secret(cfg['runner_key'])
     register_secret(cfg['github_token'])
+    if os.name == 'posix' and path and os.path.exists(path):
+        if os.stat(path).st_mode & 0o077:
+            print('ВНИМАНИЕ: %s доступен другим пользователям. Выполните: chmod 600 %s' % (path, path))
     return cfg
 
 
@@ -154,6 +164,8 @@ class Cabinet:
                 msg = json.loads(e.read()).get('error', '')
             except (ValueError, AttributeError):
                 pass
+            if e.code == 401:
+                raise KeyRevoked('Ключ runner неверный или отозван')
             raise RunnerError('Кабинет ответил %d: %s' % (e.code, msg))
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise RunnerError('Нет связи с кабинетом: %s' % type(e).__name__)
@@ -250,6 +262,9 @@ def safe_extract(data, dest, sha):
     root = tops.pop()
     if not root.endswith(sha[:7]):
         raise RunnerError('Архив не соответствует коммиту %s' % sha[:7])
+    comment = zf.comment.decode('ascii', 'ignore').strip().lower()
+    if comment != sha:
+        raise RunnerError('Архив не подтверждён: полный SHA в комментарии ZIP не совпадает с коммитом задания')
     os.makedirs(dest, exist_ok=True)
     base = os.path.realpath(dest)
     written = 0
@@ -356,23 +371,33 @@ def run_container(cfg, job, workdir, phase, log, timeout, should_cancel):
         for line in iter(proc.stdout.readline, b''):
             log.add(line.decode('utf-8', 'replace'))
 
+    def kill_container():
+        try:
+            subprocess.run([cfg['docker_bin'], 'kill', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
     t = threading.Thread(target=pump, daemon=True)
     t.start()
     started = time.monotonic()
     status = None
-    while proc.poll() is None:
-        if should_cancel():
-            status = 'cancelled'
-        elif time.monotonic() - started > timeout:
-            status = 'timeout'
-        if status:
-            subprocess.run([cfg['docker_bin'], 'kill', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            break
-        time.sleep(0.5)
+    try:
+        while proc.poll() is None:
+            if should_cancel():
+                status = 'cancelled'
+            elif time.monotonic() - started > timeout:
+                status = 'timeout'
+            if status:
+                kill_container()
+                break
+            time.sleep(0.5)
+    finally:
+        if proc.poll() is None:
+            kill_container()
     t.join(timeout=5)
     if status == 'cancelled':
         raise Cancelled()
@@ -404,10 +429,20 @@ def process_job(cfg, cab, job, on_confirm=None):
         state['cancel'] = bool(res.get('cancel'))
         state['last'] = time.monotonic()
 
+    def safe_push(**fields):
+        try:
+            push(**fields)
+        except RunnerError:
+            pass
+
     def should_cancel():
+        if STOP['v']:
+            return True
         if time.monotonic() - state['last'] > 5:
             try:
                 push()
+            except KeyRevoked:
+                state['cancel'] = True
             except RunnerError:
                 pass
         return state['cancel']
@@ -470,11 +505,17 @@ def process_job(cfg, cab, job, on_confirm=None):
         return 'success'
     except Cancelled:
         log.add('\nЗадание отменено.\n')
-        push(status='cancelled', error='Отменено из кабинета', env_info=env_info)
+        safe_push(status='cancelled', error='Отменено' + (' на стороне runner' if STOP['v'] else ' из кабинета'), env_info=env_info)
         return 'cancelled'
+    except KeyRevoked:
+        return 'error'
     except RunnerError as e:
         log.add('\nОшибка: %s\n' % e)
-        push(status='error', error=str(e), env_info=env_info)
+        safe_push(status='error', error=str(e), env_info=env_info)
+        return 'error'
+    except Exception as e:
+        log.add('\nНеожиданная ошибка runner: %s\n' % type(e).__name__)
+        safe_push(status='error', error='Неожиданная ошибка runner: %s' % type(e).__name__, env_info=env_info)
         return 'error'
     finally:
         if not cfg['keep_workdir'] and os.path.exists(workdir):
@@ -546,12 +587,16 @@ def main():
     if args.auto:
         cfg['confirm_each'] = False
     cab = Cabinet(cfg)
-    stop = {'v': False}
+    stop = STOP
     signal.signal(signal.SIGINT, lambda *a: stop.update(v=True))
+    signal.signal(signal.SIGTERM, lambda *a: stop.update(v=True))
     print('Runner %s запущен. Ожидаю задания. Остановка: Ctrl+C' % VERSION)
     while not stop['v']:
         try:
             job = cab.claim()
+        except KeyRevoked as e:
+            print('%s. Создайте новый ключ в кабинете и обновите config.json.' % e)
+            return 3
         except RunnerError as e:
             print('[%s] %s' % (time.strftime('%H:%M:%S'), e))
             time.sleep(max(15, int(cfg['poll_seconds'])))
