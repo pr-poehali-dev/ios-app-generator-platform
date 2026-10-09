@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AuditReportView } from "@/components/studio/AuditReportView";
 import { NotConnected } from "@/components/studio/StatusBadge";
 import { RepoTab } from "@/components/studio/RepoTab";
+import { BuildTab } from "@/components/studio/BuildTab";
 import { fmtBytes, fmtDate, ProjectFull, projectKind, studioApi, TEMPLATE_LABELS } from "@/lib/studio-api";
 
 const FIELDS: [keyof ProjectFull, string, string][] = [
@@ -125,6 +126,7 @@ const ProjectPage = () => {
           <TabsList className="flex h-auto flex-wrap justify-start">
             <TabsTrigger value="repo">Репозиторий</TabsTrigger>
             <TabsTrigger value="audit">Аудит</TabsTrigger>
+            <TabsTrigger value="build">Сборка</TabsTrigger>
             <TabsTrigger value="assistant">AI-чат</TabsTrigger>
             <TabsTrigger value="files">Файлы</TabsTrigger>
             <TabsTrigger value="changes">Изменения</TabsTrigger>
@@ -135,6 +137,10 @@ const ProjectPage = () => {
 
           <TabsContent value="repo" className="mt-5">
             <RepoTab project={project} onAudited={(id) => { setAuditId(id); setTab("audit"); }} />
+          </TabsContent>
+
+          <TabsContent value="build" className="mt-5">
+            <BuildTab project={project} />
           </TabsContent>
 
           <TabsContent value="audit" className="mt-5">

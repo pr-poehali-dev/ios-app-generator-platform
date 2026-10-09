@@ -1,0 +1,2 @@
+ALTER TABLE t_p49276342_ios_app_generator_pl.runner_jobs ADD COLUMN IF NOT EXISTS allow_scripts BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE t_p49276342_ios_app_generator_pl.runner_jobs ADD COLUMN IF NOT EXISTS env_info VARCHAR(300) NOT NULL DEFAULT '';

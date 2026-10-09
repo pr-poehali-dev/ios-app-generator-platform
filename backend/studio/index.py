@@ -11,6 +11,7 @@ import psycopg2.extras
 from auditor import audit_zip, AuditError
 import github_api as gh
 import secrets_box
+import studio_jobs as jobs
 
 MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
 TOKEN_TTL = 12 * 3600
@@ -23,7 +24,7 @@ EDITABLE = ['name', 'description', 'repo_url', 'stack', 'install_cmd', 'dev_cmd'
 CORS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-User-Id, X-Auth-Token, X-Session-Id',
+    'Access-Control-Allow-Headers': 'Content-Type, X-User-Id, X-Auth-Token, X-Session-Id, X-Runner-Key',
 }
 
 
@@ -248,6 +249,72 @@ def run_github(cur, event, params, body, method):
     return resp(400, {'error': 'Неизвестное действие'})
 
 
+def run_jobs(cur, params, body, method):
+    s = schema()
+    action = body.get('action') if method == 'POST' else None
+
+    if action == 'runner_create':
+        r, err = jobs.runner_create(cur, s, body.get('name'))
+        return resp(200, r) if r else resp(400, {'error': err})
+    if action == 'runner_revoke':
+        return resp(200, {'ok': True}) if jobs.runner_revoke(cur, s, int(body.get('id') or 0)) else resp(404, {'error': 'Runner не найден'})
+    if action == 'job_cancel':
+        return resp(200, {'ok': True}) if jobs.job_cancel(cur, s, int(body.get('id') or 0)) else resp(409, {'error': 'Задание уже завершено или не найдено'})
+
+    if action == 'job_create':
+        pid = int(body.get('id') or 0)
+        if body.get('confirm') is not True:
+            return resp(400, {'error': 'Запуск требует явного подтверждения'})
+        ctx = gh_context(cur, pid)
+        if not ctx:
+            return resp(400, {'error': 'К проекту не подключён репозиторий'})
+        if ctx['token_broken']:
+            return resp(422, {'error': 'Сохранённый токен не читается. Подключите репозиторий заново'})
+        cur.execute(f"SELECT output_dir FROM {s}.projects WHERE id = %s", (pid,))
+        row = cur.fetchone()
+        params_ok, err = jobs.parse_job_params(body, row['output_dir'] if row else '')
+        if not params_ok:
+            return resp(400, {'error': err})
+        try:
+            head = gh.commits(ctx['repo'], ctx['branch'], ctx['token'], 1)
+        except gh.GitHubError as e:
+            return gh_fail(e)
+        if not head or not gh.SHA_RE.match(head[0]['sha']):
+            return resp(422, {'error': 'Не удалось определить коммит ветки'})
+        sha = head[0]['sha']
+        if params_ok['sha'] and params_ok['sha'] != sha:
+            return resp(409, {'error': 'Ветка сдвинулась: новый коммит %s. Подтвердите запуск заново' % sha[:7], 'head': head[0]})
+        jid, err = jobs.job_create(cur, s, pid, ctx['repo'], ctx['branch'], sha, params_ok)
+        if not jid:
+            return resp(409, {'error': err})
+        return resp(200, {'id': jid, 'commit': sha})
+
+    if method == 'GET':
+        if params.get('runners'):
+            return resp(200, {'runners': jobs.runner_list(cur, s)})
+        if params.get('jobs'):
+            return resp(200, {'jobs': jobs.job_list(cur, s, int(params['jobs']))})
+        if params.get('job'):
+            job = jobs.job_get(cur, s, int(params['job']))
+            return resp(200, job) if job else resp(404, {'error': 'Задание не найдено'})
+    return resp(400, {'error': 'Неизвестное действие'})
+
+
+def run_runner_api(cur, event, body):
+    s = schema()
+    runner = jobs.runner_auth(cur, s, header(event, 'X-Runner-Key'))
+    if not runner:
+        return resp(401, {'error': 'Неверный или отозванный ключ runner'})
+    action = body.get('action')
+    if action == 'runner_claim':
+        job = jobs.claim(cur, s, runner['id'])
+        return resp(200, {'job': job})
+    if action == 'runner_report':
+        result = jobs.report(cur, s, runner['id'], int(body.get('job_id') or 0), body)
+        return resp(200, result) if result else resp(404, {'error': 'Задание не найдено'})
+    return resp(400, {'error': 'Неизвестное действие'})
+
+
 def clean_str(value, limit):
     return str(value or '').strip()[:limit]
 
@@ -273,10 +340,18 @@ def handler(event: dict, context) -> dict:
         if method == 'POST' and body.get('action') == 'login':
             return login(cur, event, body)
 
+        if method == 'POST' and body.get('action') in ('runner_claim', 'runner_report'):
+            return run_runner_api(cur, event, body)
+
         if not os.environ.get('STUDIO_ADMIN_PASSWORD'):
             return resp(503, {'error': 'Доступ не настроен: администратор не задал пароль кабинета'})
         if not token_valid(header(event, 'X-Auth-Token')):
             return resp(401, {'error': 'Требуется вход'})
+
+        if method == 'GET' and (params.get('runners') or params.get('jobs') or params.get('job')):
+            return run_jobs(cur, params, body, method)
+        if method == 'POST' and body.get('action') in ('runner_create', 'runner_revoke', 'job_create', 'job_cancel'):
+            return run_jobs(cur, params, body, method)
 
         if method == 'GET' and params.get('gh'):
             return run_github(cur, event, params, body, method)

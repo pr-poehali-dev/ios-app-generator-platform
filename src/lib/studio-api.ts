@@ -46,6 +46,38 @@ export type ProjectFull = Omit<ProjectRow, "last_audit_id" | "last_audit_at" | "
   audits: AuditSummary[];
 };
 
+export type JobStatus = "pending" | "running" | "success" | "failed" | "timeout" | "error" | "cancelled";
+
+export type BuildJob = {
+  id: number;
+  project_id: number;
+  runner_id: number | null;
+  repo: string;
+  branch: string;
+  commit_sha: string;
+  install_cmd: string;
+  build_cmd: string;
+  node_major: number;
+  output_dir: string;
+  allow_scripts: boolean;
+  status: JobStatus;
+  phase: string;
+  exit_install: number | null;
+  exit_build: number | null;
+  output_files: number | null;
+  output_bytes: number | null;
+  error: string;
+  env_info: string;
+  cancel_requested: boolean;
+  created_at: string;
+  claimed_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+  log?: string;
+};
+
+export type RunnerRow = { id: number; name: string; revoked: boolean; online: boolean; last_seen: string | null; created_at: string };
+
 export type GhCommit = { sha: string; message: string; author: string; date: string };
 export type GhFiles = { files: [string, number][]; total: number; truncated: boolean; skipped: number };
 export type GhConnectResult = {
@@ -178,6 +210,14 @@ export const studioApi = {
   ghFiles: (id: number) => call<GhFiles>(undefined, `?gh=files&id=${id}`),
   ghCommits: (id: number) => call<{ commits: GhCommit[] }>(undefined, `?gh=commits&id=${id}`),
   ghAudit: (id: number) => call<{ audit_id: number }>(post({ action: "audit", id })),
+  runners: () => call<{ runners: RunnerRow[] }>(undefined, "?runners=1").then((r) => r.runners),
+  runnerCreate: (name: string) => call<{ id: number; key: string; name: string }>(post({ action: "runner_create", name })),
+  runnerRevoke: (id: number) => call<{ ok: boolean }>(post({ action: "runner_revoke", id })),
+  jobs: (projectId: number) => call<{ jobs: BuildJob[] }>(undefined, `?jobs=${projectId}`).then((r) => r.jobs),
+  job: (id: number) => call<BuildJob>(undefined, `?job=${id}`),
+  jobCreate: (v: { id: number; install: string; node_major: number; allow_scripts: boolean; sha: string }) =>
+    call<{ id: number; commit: string }>(post({ action: "job_create", confirm: true, ...v })),
+  jobCancel: (id: number) => call<{ ok: boolean }>(post({ action: "job_cancel", id })),
   update: (id: number, patch: Partial<ProjectFull>) => call<{ ok: boolean }>(post({ id, ...patch }, "PUT")),
 };
 
@@ -205,6 +245,20 @@ export const projectKind = (p: { source_type: string; template: string }) =>
   p.source_type === "zip"
     ? { label: "Аудит выполнен", hint: "Рабочая копия не подключена" }
     : { label: "Черновик задания", hint: "Сайт не создаётся" };
+
+export const JOB_META: Record<JobStatus, { label: string; cls: string }> = {
+  pending: { label: "Ожидает runner", cls: "text-slate-300 bg-slate-500/10 border-slate-500/30" },
+  running: { label: "Выполняется", cls: "text-sky-300 bg-sky-500/10 border-sky-500/30" },
+  success: { label: "Сборка прошла", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30" },
+  failed: { label: "Сборка не прошла", cls: "text-red-300 bg-red-500/10 border-red-500/30" },
+  timeout: { label: "Превышено время", cls: "text-orange-300 bg-orange-500/10 border-orange-500/30" },
+  error: { label: "Ошибка запуска", cls: "text-red-300 bg-red-500/10 border-red-500/30" },
+  cancelled: { label: "Отменено", cls: "text-slate-300 bg-slate-500/10 border-slate-500/30" },
+};
+
+export const PHASE_LABELS: Record<string, string> = {
+  download: "скачивание", prepare: "подготовка", install: "установка зависимостей", build: "сборка", done: "завершено",
+};
 
 export const STATUS_META: Record<AuditStatus, { label: string; cls: string; icon: string }> = {
   portable: { label: "Переносимо", cls: "text-emerald-300 bg-emerald-500/10 border-emerald-500/30", icon: "CircleCheck" },

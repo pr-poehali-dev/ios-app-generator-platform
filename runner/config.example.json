@@ -1,0 +1,17 @@
+{
+  "cabinet_url": "https://functions.poehali.dev/ВАШ-АДРЕС-ФУНКЦИИ-studio",
+  "runner_key": "sr_ключ_из_кабинета",
+  "github_token": "",
+  "work_dir": "work",
+  "docker_bin": "docker",
+  "node_image": "node:{major}-bookworm-slim",
+  "npm_registry": "",
+  "memory": "2g",
+  "cpus": "2",
+  "pids": "512",
+  "install_timeout": 900,
+  "build_timeout": 900,
+  "poll_seconds": 5,
+  "confirm_each": true,
+  "keep_workdir": false
+}
