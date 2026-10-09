@@ -213,15 +213,21 @@ def run_github(cur, event, params, body, method):
             return resp(200, {'commits': gh.commits(ctx['repo'], ctx['branch'], ctx['token'], 20)})
         if action == 'audit':
             head = gh.commits(ctx['repo'], ctx['branch'], ctx['token'], 1)
-            data = gh.download_zip(ctx['repo'], ctx['branch'], ctx['token'])
-            label = '%s@%s' % (ctx['repo'], ctx['branch'])
+            if not head or not gh.SHA_RE.match(head[0]['sha']):
+                return resp(422, {'error': 'Не удалось определить коммит ветки'})
+            sha = head[0]['sha']
+            data = gh.download_zip(ctx['repo'], sha, ctx['token'])
+            label = '%s@%s' % (ctx['repo'], sha[:7])
             try:
                 result = audit_zip(data, label)
             except AuditError as e:
                 return resp(422, {'error': str(e)})
             report = result['report']
+            root = report['archive'].get('root_folder', '')
+            if not root.endswith(sha[:7]):
+                return resp(502, {'error': 'Скачанный архив не соответствует коммиту %s — аудит отклонён' % sha[:7]})
             report['source'] = {'type': 'github', 'repo': ctx['repo'], 'branch': ctx['branch'],
-                                'commit': head[0]['sha'] if head else '', 'commit_message': head[0]['message'] if head else ''}
+                                'commit': sha, 'commit_message': head[0]['message']}
             cmds = report['commands']
             cur.execute(
                 f"""INSERT INTO {s}.project_audits (project_id, filename, archive_size, report, tree)

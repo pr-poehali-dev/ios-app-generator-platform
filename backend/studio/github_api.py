@@ -14,6 +14,7 @@ ZIP_HOSTS = ('codeload.github.com',)
 
 OWNER_RE = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$')
 NAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,100}$')
+SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 BRANCH_RE = re.compile(r'^[A-Za-z0-9._/@+-]{1,200}$')
 
 
