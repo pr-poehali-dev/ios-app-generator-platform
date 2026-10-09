@@ -92,6 +92,12 @@ export const AuditReportView = ({ audit }: { audit: AuditFull }) => {
         <Icon name="ShieldCheck" size={18} className="mt-0.5 shrink-0 text-primary" />
         <div className="space-y-1 text-muted-foreground">
           <p>{r.notice}</p>
+          {r.source?.type === "github" && (
+            <p>
+              Источник: GitHub <b className="text-foreground">{r.source.repo}</b>, ветка {r.source.branch}, коммит{" "}
+              <code>{r.source.commit.slice(0, 7)}</code>{r.source.commit_message ? ` — ${r.source.commit_message}` : ""}
+            </p>
+          )}
           <p>Установка, сборка и запуск: <b className="text-foreground">не проверено</b>. Проект не подключён к рабочей копии.</p>
           {r.scan && <p>Просмотрено текстовых файлов: {r.scan.files_scanned} из {r.scan.files_text_total}.</p>}
         </div>

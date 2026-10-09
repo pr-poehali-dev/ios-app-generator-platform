@@ -11,6 +11,7 @@ export type Counts = {
 
 export type ProjectRow = {
   id: number;
+  gh_repo: string;
   name: string;
   description: string;
   template: string;
@@ -39,7 +40,17 @@ export type ProjectFull = Omit<ProjectRow, "last_audit_id" | "last_audit_at" | "
   build_cmd: string;
   output_dir: string;
   node_version: string;
+  gh_repo: string;
+  gh_branch: string;
+  gh_has_token: boolean;
   audits: AuditSummary[];
+};
+
+export type GhCommit = { sha: string; message: string; author: string; date: string };
+export type GhFiles = { files: [string, number][]; total: number; truncated: boolean; skipped: number };
+export type GhConnectResult = {
+  repo: string; branch: string; private: boolean; has_token: boolean; warnings: string[];
+  head: GhCommit | null;
 };
 
 export type AuditStatus = keyof Counts;
@@ -72,6 +83,7 @@ export type AuditReport = {
   certainty?: Record<Certainty, number>;
   tables?: string[];
   scan?: { files_scanned: number; files_text_total: number; truncated: boolean };
+  source?: { type: string; repo: string; branch: string; commit: string; commit_message: string };
   archive: { filename: string; compressed: number; files: number; uncompressed: number; root_folder: string };
   stack: string[];
   package: {
@@ -160,6 +172,12 @@ export const studioApi = {
     call<{ id: number }>(post({ action: "create", ...v })),
   import: (v: { name: string; description: string; repo_url: string; filename: string; file_base64: string }) =>
     call<{ id: number; audit_id: number }>(post({ action: "import", ...v })),
+  ghConnect: (v: { id: number; repo: string; branch: string; token: string; keep_token: boolean }) =>
+    call<GhConnectResult>(post({ action: "connect", ...v })),
+  ghDisconnect: (id: number) => call<{ ok: boolean }>(post({ action: "disconnect", id })),
+  ghFiles: (id: number) => call<GhFiles>(undefined, `?gh=files&id=${id}`),
+  ghCommits: (id: number) => call<{ commits: GhCommit[] }>(undefined, `?gh=commits&id=${id}`),
+  ghAudit: (id: number) => call<{ audit_id: number }>(post({ action: "audit", id })),
   update: (id: number, patch: Partial<ProjectFull>) => call<{ ok: boolean }>(post({ id, ...patch }, "PUT")),
 };
 

@@ -44,7 +44,7 @@ const Card = ({ p }: { p: ProjectRow }) => (
       </div>
       <div className="flex items-center gap-1.5">
         <Icon name="GitBranch" size={12} />
-        <span className="truncate">{p.repo_url || "Репозиторий не указан"}</span>
+        <span className="truncate">{p.gh_repo ? `GitHub: ${p.gh_repo}` : p.repo_url || "Репозиторий не указан"}</span>
       </div>
       <div className="flex items-center gap-1.5">
         <Icon name="Clock" size={12} /> {fmtDate(p.updated_at)}

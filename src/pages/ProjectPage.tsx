@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AuditReportView } from "@/components/studio/AuditReportView";
 import { NotConnected } from "@/components/studio/StatusBadge";
+import { RepoTab } from "@/components/studio/RepoTab";
 import { fmtBytes, fmtDate, ProjectFull, projectKind, studioApi, TEMPLATE_LABELS } from "@/lib/studio-api";
 
 const FIELDS: [keyof ProjectFull, string, string][] = [
@@ -73,6 +74,7 @@ const ProjectPage = () => {
   const pid = Number(id);
   const qc = useQueryClient();
   const [auditId, setAuditId] = useState<number | null>(null);
+  const [tab, setTab] = useState<string | null>(null);
 
   const { data: project, isLoading, error } = useQuery({
     queryKey: ["project", pid],
@@ -108,7 +110,7 @@ const ProjectPage = () => {
           <div>
             <h1 className="font-heading text-2xl font-black">{project.name}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              {projectKind(project).label} · {projectKind(project).hint}
+              {project.gh_repo ? `Репозиторий ${project.gh_repo} (${project.gh_branch}), только чтение` : `${projectKind(project).label} · ${projectKind(project).hint}`}
               {project.source_type === "new" ? ` · шаблон: ${TEMPLATE_LABELS[project.template] || project.template}` : ""} · обновлён {fmtDate(project.updated_at)}
             </p>
             {project.description && <p className="mt-2 max-w-2xl text-sm">{project.description}</p>}
@@ -119,8 +121,9 @@ const ProjectPage = () => {
           </Button>
         </header>
 
-        <Tabs defaultValue={project.source_type === "zip" ? "audit" : "settings"}>
+        <Tabs value={tab ?? (project.source_type === "zip" || project.audits.length > 0 ? "audit" : "repo")} onValueChange={setTab}>
           <TabsList className="flex h-auto flex-wrap justify-start">
+            <TabsTrigger value="repo">Репозиторий</TabsTrigger>
             <TabsTrigger value="audit">Аудит</TabsTrigger>
             <TabsTrigger value="assistant">AI-чат</TabsTrigger>
             <TabsTrigger value="files">Файлы</TabsTrigger>
@@ -130,9 +133,13 @@ const ProjectPage = () => {
             <TabsTrigger value="settings">Настройки</TabsTrigger>
           </TabsList>
 
+          <TabsContent value="repo" className="mt-5">
+            <RepoTab project={project} onAudited={(id) => { setAuditId(id); setTab("audit"); }} />
+          </TabsContent>
+
           <TabsContent value="audit" className="mt-5">
             {project.audits.length === 0 && (
-              <NotConnected icon="FileSearch" title="Аудит не проводился" text="Это черновик задания. Аудит появляется только у проектов, импортированных из ZIP." />
+              <NotConnected icon="FileSearch" title="Аудит не проводился" text="Загрузите ZIP при создании записи или подключите репозиторий GitHub на вкладке «Репозиторий» и запустите аудит." />
             )}
             {project.audits.length > 0 && (
               <>

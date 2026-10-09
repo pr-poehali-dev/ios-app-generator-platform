@@ -9,6 +9,8 @@ import psycopg2
 import psycopg2.extras
 
 from auditor import audit_zip, AuditError
+import github_api as gh
+import secrets_box
 
 MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
 TOKEN_TTL = 12 * 3600
@@ -96,7 +98,8 @@ def login(cur, event, body):
 
 
 PROJECT_COLS = ('id, name, description, template, source_type, repo_url, stack, install_cmd, '
-                'dev_cmd, build_cmd, output_dir, node_version, archived, created_at, updated_at')
+                'dev_cmd, build_cmd, output_dir, node_version, archived, created_at, updated_at, '
+                "gh_repo, gh_branch, (gh_token_enc <> '') AS gh_has_token")
 
 
 def list_projects(cur, include_archived):
@@ -104,7 +107,7 @@ def list_projects(cur, include_archived):
     where = '' if include_archived else 'WHERE p.archived = FALSE'
     cur.execute(
         f"""SELECT p.id, p.name, p.description, p.template, p.source_type, p.repo_url, p.stack,
-                   p.archived, p.created_at, p.updated_at,
+                   p.archived, p.created_at, p.updated_at, p.gh_repo,
                    a.id AS last_audit_id, a.created_at AS last_audit_at,
                    a.report->'counts' AS counts
             FROM {s}.projects p
@@ -143,6 +146,102 @@ def get_audit(cur, aid):
     return cur.fetchone()
 
 
+def gh_context(cur, pid):
+    cur.execute(
+        f"SELECT gh_repo, gh_branch, gh_token_enc FROM {schema()}.projects WHERE id = %s", (pid,))
+    row = cur.fetchone()
+    if not row or not row['gh_repo']:
+        return None
+    return {'repo': row['gh_repo'], 'branch': row['gh_branch'], 'token': secrets_box.decrypt(row['gh_token_enc']),
+            'token_broken': bool(row['gh_token_enc']) and not secrets_box.decrypt(row['gh_token_enc'])}
+
+
+def gh_fail(e):
+    return resp(e.status, {'error': str(e)})
+
+
+def run_github(cur, event, params, body, method):
+    s = schema()
+    action = body.get('action') if method == 'POST' else params.get('gh')
+    pid = int(body.get('id') or params.get('id') or 0)
+
+    if action == 'connect':
+        try:
+            repo = gh.parse_repo(body.get('repo'))
+            branch = gh.clean_branch(body.get('branch'))
+        except gh.GitHubError as e:
+            return gh_fail(e)
+        token = str(body.get('token') or '').strip()
+        keep_token = bool(body.get('keep_token'))
+        if token and not secrets_box.available():
+            return resp(400, {'error': 'Ключ шифрования токенов не задан администратором (секрет STUDIO_TOKEN_KEY). Публичный репозиторий можно подключить без токена'})
+        if keep_token and not token:
+            ctx = gh_context(cur, pid)
+            token = ctx['token'] if ctx else ''
+        try:
+            info = gh.repo_info(repo, token)
+            if not branch:
+                branch = info['default_branch']
+            head = gh.commits(repo, branch, token, 1)
+        except gh.GitHubError as e:
+            return gh_fail(e)
+        enc = secrets_box.encrypt(token) if token else ''
+        cur.execute(
+            f"""UPDATE {s}.projects SET gh_repo = %s, gh_branch = %s, gh_token_enc = %s,
+                repo_url = %s, updated_at = NOW() WHERE id = %s RETURNING id""",
+            (info['full_name'], branch, enc, 'https://github.com/' + info['full_name'], pid),
+        )
+        if not cur.fetchone():
+            return resp(404, {'error': 'Проект не найден'})
+        return resp(200, {'repo': info['full_name'], 'branch': branch, 'private': info['private'],
+                          'has_token': bool(enc), 'warnings': info['warnings'],
+                          'head': head[0] if head else None})
+
+    ctx = gh_context(cur, pid)
+    if action == 'disconnect':
+        cur.execute(f"UPDATE {s}.projects SET gh_repo = '', gh_branch = '', gh_token_enc = '', updated_at = NOW() WHERE id = %s", (pid,))
+        return resp(200, {'ok': True})
+    if not ctx:
+        return resp(400, {'error': 'К проекту не подключён репозиторий'})
+    if ctx['token_broken']:
+        return resp(422, {'error': 'Сохранённый токен не читается (ключ шифрования изменён). Подключите репозиторий заново'})
+
+    try:
+        if action == 'files':
+            return resp(200, gh.tree(ctx['repo'], ctx['branch'], ctx['token']))
+        if action == 'commits':
+            return resp(200, {'commits': gh.commits(ctx['repo'], ctx['branch'], ctx['token'], 20)})
+        if action == 'audit':
+            head = gh.commits(ctx['repo'], ctx['branch'], ctx['token'], 1)
+            data = gh.download_zip(ctx['repo'], ctx['branch'], ctx['token'])
+            label = '%s@%s' % (ctx['repo'], ctx['branch'])
+            try:
+                result = audit_zip(data, label)
+            except AuditError as e:
+                return resp(422, {'error': str(e)})
+            report = result['report']
+            report['source'] = {'type': 'github', 'repo': ctx['repo'], 'branch': ctx['branch'],
+                                'commit': head[0]['sha'] if head else '', 'commit_message': head[0]['message'] if head else ''}
+            cmds = report['commands']
+            cur.execute(
+                f"""INSERT INTO {s}.project_audits (project_id, filename, archive_size, report, tree)
+                    VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                (pid, label[:300], len(data), json.dumps(report, ensure_ascii=False),
+                 json.dumps(result['tree'], ensure_ascii=False)),
+            )
+            aid = cur.fetchone()['id']
+            cur.execute(
+                f"""UPDATE {s}.projects SET stack = %s, install_cmd = %s, dev_cmd = %s, build_cmd = %s,
+                    output_dir = %s, node_version = %s, updated_at = NOW() WHERE id = %s""",
+                (', '.join(report['stack'])[:200], cmds['install']['value'], cmds['dev']['value'],
+                 cmds['build']['value'], cmds['output_dir']['value'], cmds['node_version']['value'], pid),
+            )
+            return resp(200, {'audit_id': aid})
+    except gh.GitHubError as e:
+        return gh_fail(e)
+    return resp(400, {'error': 'Неизвестное действие'})
+
+
 def clean_str(value, limit):
     return str(value or '').strip()[:limit]
 
@@ -172,6 +271,11 @@ def handler(event: dict, context) -> dict:
             return resp(503, {'error': 'Доступ не настроен: администратор не задал пароль кабинета'})
         if not token_valid(header(event, 'X-Auth-Token')):
             return resp(401, {'error': 'Требуется вход'})
+
+        if method == 'GET' and params.get('gh'):
+            return run_github(cur, event, params, body, method)
+        if method == 'POST' and body.get('action') in ('connect', 'disconnect', 'audit'):
+            return run_github(cur, event, params, body, method)
 
         if method == 'GET':
             if params.get('check'):
